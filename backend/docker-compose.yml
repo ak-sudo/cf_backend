@@ -1,0 +1,123 @@
+version: '3.8'
+
+services:
+  # ==========================================
+  # CivicFlow Primary REST API Service
+  # ==========================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: civicflow-api
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      - NODE_ENV=production
+      - PORT=8080
+      - MONGODB_URI=mongodb://mongodb:27017/civicflow
+      - REDIS_URL=redis://redis:6379
+      - AI_SERVICE_URL=http://ai-service:8000/api/v1/classify
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:3000,http://localhost:5173}
+      - FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID}
+      - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET:-civicflow_production_access_secret_key_32_chars}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-civicflow_production_refresh_secret_key_32_chars}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ai-service:
+        condition: service_started
+    networks:
+      - civicflow-net
+
+  # ==========================================
+  # CivicFlow Asynchronous BullMQ Background Worker
+  # ==========================================
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: civicflow-worker
+    command: ["node", "src/worker-runner.js"]
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongodb:27017/civicflow
+      - REDIS_URL=redis://redis:6379
+      - AI_SERVICE_URL=http://ai-service:8000/api/v1/classify
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ai-service:
+        condition: service_started
+    networks:
+      - civicflow-net
+
+  # ==========================================
+  # Python Gemma 4 AI Inference Microservice
+  # ==========================================
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    container_name: civicflow-ai-service
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - AI_SERVICE_PORT=8000
+      - GEMMA_MODEL_NAME=${GEMMA_MODEL_NAME:-gemma-4-civic-vision}
+      - GEMMA_API_KEY=${GEMMA_API_KEY:-AQ.Ab8RN6KSkSA5o8-yC5Z4lJdJXSFMKb6vrpi33jtnyPS4oGeuwA}
+      - GEMMA_ENDPOINT=${GEMMA_ENDPOINT:-http://localhost:8000/api/v1/classify}
+    networks:
+      - civicflow-net
+
+  # ==========================================
+  # MongoDB Database Service
+  # ==========================================
+  mongodb:
+    image: mongo:7.0
+    container_name: civicflow-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - civicflow-net
+
+  # ==========================================
+  # Redis Queue & Caching Service
+  # ==========================================
+  redis:
+    image: redis:7.2-alpine
+    container_name: civicflow-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - civicflow-net
+
+volumes:
+  mongodb_data:
+  redis_data:
+
+networks:
+  civicflow-net:
+    driver: bridge
